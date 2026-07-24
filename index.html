@@ -35,6 +35,7 @@
   --shadow-lg:0 12px 40px rgba(16,24,40,.16);
   --radius:14px; --radius-sm:10px;
   --side-w:230px;
+  --side-w-mini:66px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
@@ -52,6 +53,7 @@ input,select,textarea{font-family:inherit}
 .sidebar{
   width:var(--side-w);flex-shrink:0;background:linear-gradient(180deg,var(--brand),var(--brand-dark));color:#DBEAFE;
   display:flex;flex-direction:column;position:fixed;inset:0 auto 0 0;height:100vh;height:100dvh;z-index:40;
+  transition:transform .25s ease, width .2s ease, box-shadow .2s ease;
 }
 .nav{padding:14px 12px 6px;flex:1;overflow-y:auto}
 .nav-label{font-size:10px;font-weight:700;letter-spacing:.9px;color:rgba(255,255,255,.55);padding:14px 12px 7px;text-transform:uppercase}
@@ -60,6 +62,7 @@ input,select,textarea{font-family:inherit}
   color:rgba(255,255,255,.82);font-size:13.5px;font-weight:600;text-align:left;transition:.15s;margin-bottom:3px
 }
 .nav-item svg{width:19px;height:19px;flex-shrink:0;opacity:.9}
+.nav-item .nav-txt{white-space:nowrap;overflow:hidden}
 .nav-item:hover{background:rgba(255,255,255,.12);color:#fff}
 .nav-item.active{background:rgba(255,255,255,.18);color:#fff;box-shadow:inset 0 0 0 1px rgba(255,255,255,.25)}
 .nav-item.active svg{opacity:1}
@@ -69,7 +72,7 @@ input,select,textarea{font-family:inherit}
 .patrimonio-card .val{font-size:18px;font-weight:800;color:#fff;margin-top:3px;letter-spacing:-.4px}
 
 /* ---------- Main ---------- */
-.main{flex:1;margin-left:var(--side-w);min-width:0;display:flex;flex-direction:column}
+.main{flex:1;margin-left:var(--side-w);min-width:0;display:flex;flex-direction:column;transition:margin-left .25s ease}
 .topbar{
   position:sticky;top:0;z-index:30;background:#fff;
   border-bottom:1px solid var(--border);padding:12px 30px;
@@ -269,7 +272,25 @@ tbody tr:hover{background:var(--surface-2)}
 
 /* mobile nav */
 .mobile-nav{display:none}
-.menu-btn{display:none}
+.menu-btn{display:grid;place-items:center;width:38px;height:38px;border-radius:9px;background:var(--surface);border:1px solid var(--border);color:var(--ink-soft);transition:.15s;flex-shrink:0}
+.menu-btn:hover{background:var(--surface-2);color:var(--brand)}
+
+/* ---------- Menu lateral em modo mini (desktop) ---------- */
+@media(min-width:861px){
+  .app.sb-collapsed .sidebar{width:var(--side-w-mini)}
+  .app.sb-collapsed .main{margin-left:var(--side-w-mini)}
+  .app.sb-collapsed .nav{padding-left:8px;padding-right:8px}
+  .app.sb-collapsed .nav-item{justify-content:center;padding:11px 0;gap:0}
+  .app.sb-collapsed .nav-item .nav-txt{display:none}
+  .app.sb-collapsed .sidebar-foot{display:none}
+
+  /* expande ao passar o mouse (sobrepõe o conteúdo, sem empurrar) */
+  .app.sb-collapsed .sidebar:hover{width:var(--side-w);box-shadow:var(--shadow-lg)}
+  .app.sb-collapsed .sidebar:hover .nav{padding-left:12px;padding-right:12px}
+  .app.sb-collapsed .sidebar:hover .nav-item{justify-content:flex-start;padding:10px 13px;gap:12px}
+  .app.sb-collapsed .sidebar:hover .nav-item .nav-txt{display:inline}
+  .app.sb-collapsed .sidebar:hover .sidebar-foot{display:block}
+}
 
 /* responsive */
 @media(max-width:1080px){
@@ -1190,8 +1211,8 @@ const SECOES=[
 ];
 function renderNav(){
   const nav=document.getElementById("nav");
-  nav.innerHTML=SECOES.map(s=>`<button class="nav-item ${s.id===state.secao?"active":""}" data-sec="${s.id}">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${s.icon}</svg>${s.nome}</button>`).join("");
+  nav.innerHTML=SECOES.map(s=>`<button class="nav-item ${s.id===state.secao?"active":""}" data-sec="${s.id}" title="${s.nome}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${s.icon}</svg><span class="nav-txt">${s.nome}</span></button>`).join("");
   nav.querySelectorAll("[data-sec]").forEach(b=>b.onclick=()=>{ state.secao=b.dataset.sec; closeSidebar(); render(); });
 }
 function renderSidebar(){ document.getElementById("sidePatrimonio").textContent=fmt(patrimonio()); }
@@ -1886,7 +1907,7 @@ function viewTransacoes(){
       <tbody>${pagina.map(linha).join("")}</tbody>
     </table></div>
     <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:14px;font-size:12.5px;font-weight:600;color:var(--ink-soft)">
-      <span>Mostrar <select id="selTxPag" class="mini-sel" style="padding:4px 8px">${[10,25,50].map(n=>`<option ${por===n?"selected":""}>${n}</option>`).join("")}</select> por página</span>
+      <span>Mostrar <select id="selTxPag" class="mini-sel" style="padding:4px 8px">${[10,25,50,100].map(n=>`<option ${por===n?"selected":""}>${n}</option>`).join("")}</select> por página</span>
       <span>Mostrando ${tx.length?ini+1:0}-${Math.min(ini+por,tx.length)} de ${tx.length} transações</span>
       <div style="flex:1"></div>
       ${totalPag>1?`<div style="display:flex;gap:6px">
@@ -4153,8 +4174,17 @@ document.getElementById("topGear").onclick=function(e){
   setTimeout(()=>document.addEventListener("click",function once(){ m.remove(); document.removeEventListener("click",once); }),0);
 };
 const sidebar=document.getElementById("sidebar"), scrim=document.getElementById("scrim");
+const appEl=document.querySelector(".app");
 function closeSidebar(){ sidebar.classList.remove("open"); scrim.classList.remove("show"); }
-document.getElementById("menuBtn").onclick=()=>{ sidebar.classList.toggle("open"); scrim.classList.toggle("show"); };
+function isNavMobile(){ return window.matchMedia("(max-width:860px)").matches; }
+function setSidebarCollapsed(v){ appEl.classList.toggle("sb-collapsed", v); try{ localStorage.setItem("mf_sb_collapsed", v?"1":"0"); }catch(e){} }
+try{ if(localStorage.getItem("mf_sb_collapsed")==="1") appEl.classList.add("sb-collapsed"); }catch(e){}
+const menuBtn=document.getElementById("menuBtn");
+menuBtn.title="Recolher/expandir menu";
+menuBtn.onclick=()=>{
+  if(isNavMobile()){ sidebar.classList.toggle("open"); scrim.classList.toggle("show"); }
+  else{ setSidebarCollapsed(!appEl.classList.contains("sb-collapsed")); }
+};
 scrim.onclick=closeSidebar;
 document.addEventListener("keydown",e=>{ if(e.key==="Escape") closeModal(); });
 

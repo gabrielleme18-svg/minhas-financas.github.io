@@ -547,8 +547,14 @@ thead .prev-fixa{background:var(--surface-2);z-index:3}
 /* ---------- storage (com fallback em memória) ---------- */
 const STORE_KEY = "minhas_financas_v1";
 let memStore = null;
-function safeGet(){ try{ return localStorage.getItem(STORE_KEY); }catch(e){ return memStore; } }
-function safeSet(v){ try{ localStorage.setItem(STORE_KEY, v); }catch(e){ memStore = v; } }
+function safeGet(){ if(memStore!=null) return memStore; try{ return localStorage.getItem(STORE_KEY); }catch(e){ return memStore; } }
+function safeSet(v){
+  try{ localStorage.setItem(STORE_KEY, v); memStore = null; }
+  catch(e){
+    try{ localStorage.removeItem("mf_backups"); localStorage.setItem(STORE_KEY, v); memStore = null; }
+    catch(e2){ memStore = v; console.warn("Sem espaço no navegador para salvar os dados.", e2); }
+  }
+}
 
 /* ---------- modelo de dados ---------- */
 let DB = null;
@@ -601,7 +607,8 @@ function carregar(){
   DB.recorrencias.forEach(r=>{ r.puladas ||= []; });
   if(typeof DB.updatedAt!=="number") DB.updatedAt=0;
 }
-function salvar(){ if(!_aplicandoRemoto) DB.updatedAt = Date.now(); safeSet(JSON.stringify(DB)); renderSidebar(); nuvemAgendarEnvio(); }
+/* salvar(true) = gravação automática (ex.: gerar lançamentos fixos). Não conta como edição do usuário. */
+function salvar(auto){ if(!auto && !_aplicandoRemoto) DB.updatedAt = Date.now(); safeSet(JSON.stringify(DB)); renderSidebar(); nuvemAgendarEnvio(); }
 
 /* ---------- utilidades ---------- */
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -898,7 +905,7 @@ function orcadoCat(id){
 function setOrcadoCat(id,valor){
   const v=+valor||0;
   const i=DB.orcamentos.findIndex(o=>o.categoriaId===id);
-  if(i>=0) DB.orcamentos[i].valorOrcado=v; else DB.orcamentos.push({id:uid(),categoriaId:id,valorOrcado:v});
+  if(i>=0) DB.orcamentos[i].valorOrcado=v; else DB.orcamentos.push({id:"orc_"+id,categoriaId:id,valorOrcado:v});
 }
 
 /* Estado do orçamento de uma categoria (ou do total), com base no comprometido = realizado + agendado. */
@@ -1070,7 +1077,7 @@ function sincronizarRecorrencias(){
       const key=r.id+"|"+iso;
       if(existentes.has(key)) return;
       DB.transacoes.push({
-        id:uid(), tipo:r.tipo, valor:r.valor, descricao:r.descricao,
+        id:"rc_"+r.id+"_"+iso, tipo:r.tipo, valor:r.valor, descricao:r.descricao,
         categoriaId:r.categoriaId, contaId:r.contaId, data:iso,
         status:r.lancarStatus||"pendente",
         recorrenciaId:r.id, competencia:iso, recorrente:true
@@ -1361,7 +1368,7 @@ let _lastSecaoRender=null;
 function render(){
   const _scrollY=(_lastSecaoRender===state.secao)? window.scrollY : 0; // mantém a rolagem ao atualizar a mesma tela
   carregar();
-  if(sincronizarRecorrencias()) salvar();
+  if(sincronizarRecorrencias()) salvar(true);
   document.getElementById("monthLabel").textContent=nomeMes(state.mes);
   if(!SECOES.find(s=>s.id===state.secao)) state.secao="dashboard";
   const sec=SECOES.find(s=>s.id===state.secao);
@@ -3839,11 +3846,25 @@ function modalBackup(){
     <button class="btn btn-ghost" id="bkExcel" style="width:100%;justify-content:center;margin-bottom:10px">📊 Exportar para Excel (.xlsx)</button>
     <label class="btn btn-ghost" style="width:100%;justify-content:center;margin-bottom:18px;cursor:pointer">📤 Restaurar backup (.json)
       <input type="file" id="bkRestore" accept=".json" style="display:none"></label>
+    ${(()=>{ const bks=lerBackups(); return bks.length?`<div style="border-top:1px solid var(--border-soft);padding-top:14px;margin-bottom:16px">
+      <div style="font-size:12.5px;font-weight:800;margin-bottom:4px">Cópias automáticas deste aparelho</div>
+      <div style="font-size:11.5px;color:var(--ink-soft);font-weight:600;margin-bottom:10px">Guardadas uma vez por dia e sempre que a sincronização remove lançamentos.</div>
+      ${bks.map((b,i)=>`<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border-soft)">
+        <div><div style="font-size:12.5px;font-weight:700">${new Date(b.ts).toLocaleString("pt-BR")}</div>
+        <div style="font-size:11px;color:var(--ink-faint);font-weight:600">${escapeHtml(b.motivo)} · ${b.n} transações</div></div>
+        <button class="btn btn-ghost" data-bk-auto="${i}" style="padding:6px 10px">Restaurar</button></div>`).join("")}
+    </div>`:""; })()}
     <div style="border-top:1px solid var(--border-soft);padding-top:14px">
       <button class="btn btn-ghost" id="bkReset" style="width:100%;justify-content:center;color:var(--expense);border-color:var(--expense-soft)">🗑️ Apagar todos os dados</button>
     </div>
   </div>`);
   document.getElementById("bkJson").onclick=()=>{ baixarJSON(); };
+  document.querySelectorAll("[data-bk-auto]").forEach(btn=>btn.onclick=()=>{
+    const b=lerBackups()[Number(btn.dataset.bkAuto)]; if(!b) return;
+    if(!confirm(`Restaurar a cópia de ${new Date(b.ts).toLocaleString("pt-BR")}? Os dados atuais serão substituídos em todos os aparelhos.`)) return;
+    try{ guardarBackup("antes de restaurar", DB); DB=JSON.parse(b.json); salvar(); closeModal(); render(); toast("Cópia restaurada."); }
+    catch(e){ toast("Não foi possível restaurar esta cópia.","err"); }
+  });
   document.getElementById("bkExcel").onclick=()=>{ exportarExcel(); };
   document.getElementById("bkReset").onclick=()=>{
     if(confirm("Tem certeza? Isso apagará TODAS as contas, lançamentos, investimentos, orçamentos e objetivos. Esta ação não pode ser desfeita.")){
@@ -4125,7 +4146,7 @@ const firebaseConfig = {
 /* ▲▲▲ fim da configuração ▲▲▲ */
 
 let _fbAuth=null, _fbDB=null, _fbUser=null, _docRef=null, _unsub=null;
-let _pushTimer=null, _ultimoEnvioTs=0, _primeiraSync=true, _aplicandoRemoto=false;
+let _pushTimer=null, _primeiraSync=true, _aplicandoRemoto=false;
 
 function nuvemConfigurada(){
   return firebaseConfig.apiKey && !String(firebaseConfig.apiKey).startsWith("COLE_AQUI");
@@ -4139,67 +4160,243 @@ function mostrarGate(v){
   const g=document.getElementById("authGate"); if(g) g.style.display = v?"flex":"none";
 }
 
-/* ---- envio (gravação na nuvem), com debounce ---- */
-function nuvemAgendarEnvio(){
-  if(!_docRef || _aplicandoRemoto) return;
-  setSyncStatus("sync","Salvando…");
-  clearTimeout(_pushTimer);
-  _pushTimer=setTimeout(nuvemEnviar, 900);
+/* ====================================================================
+   SINCRONIZAÇÃO v2 — mesclagem em 3 vias
+   Cada aparelho guarda a "base": a última versão que ele e a nuvem tinham
+   em comum. Ao sincronizar, compara base × aparelho × nuvem, item a item
+   (por id), e junta as mudanças dos dois lados. Nada é descartado só
+   porque outro aparelho salvou depois.
+   - Nunca envia nada antes de ler a versão do servidor.
+   - O envio é feito numa transação: lê a nuvem, mescla e grava de uma vez.
+   - Se estiver offline, as mudanças ficam aqui e sobem na próxima conexão.
+==================================================================== */
+let _syncEmCurso=false, _syncDeNovo=false, _servidorVisto=false, _syncFalhas=0, _ultimoSyncOk=0;
+
+/* JSON canônico (chaves ordenadas) para comparar conteúdos */
+function stableStr(v){
+  if(v===undefined) return "~";
+  if(v===null || typeof v!=="object") return JSON.stringify(v);
+  if(Array.isArray(v)) return "["+v.map(stableStr).join(",")+"]";
+  return "{"+Object.keys(v).filter(k=>v[k]!==undefined).sort().map(k=>JSON.stringify(k)+":"+stableStr(v[k])).join(",")+"}";
 }
-/* iOS congela timers ao trocar de app/bloquear a tela: envia imediatamente o que
-   estiver pendente no debounce para a última edição não ficar só neste aparelho. */
-function nuvemFlush(){
-  if(_pushTimer){ clearTimeout(_pushTimer); _pushTimer=null; nuvemEnviar(); }
+function _isObj(x){ return !!x && typeof x==="object" && !Array.isArray(x); }
+function _isIdArr(a){ return Array.isArray(a) && a.every(x=>_isObj(x) && x.id!=null); }
+function _isPrimArr(a){ return Array.isArray(a) && a.every(x=>x===null || typeof x!=="object"); }
+function merge3(b,l,r,pl){
+  const sl=stableStr(l), sr=stableStr(r);
+  if(sl===sr) return l;
+  const sb=stableStr(b);
+  if(sl===sb) return r;            // só a nuvem mudou
+  if(sr===sb) return l;            // só este aparelho mudou
+  if(l===undefined) return r;      // apagado aqui, editado lá → preserva a edição
+  if(r===undefined) return l;      // apagado lá, editado aqui → preserva a edição
+  if(_isObj(l) && _isObj(r)){
+    const bb=_isObj(b)?b:{}, out={};
+    const ks=[...Object.keys(l), ...Object.keys(r).filter(k=>!(k in l))];
+    ks.forEach(k=>{ const v=merge3(bb[k],l[k],r[k],pl); if(v!==undefined) out[k]=v; });
+    return out;
+  }
+  if(_isIdArr(l) && _isIdArr(r) && (b===undefined || _isIdArr(b))){
+    const mapa=a=>{ const m=new Map(); (a||[]).forEach(x=>{ const k=String(x.id); if(!m.has(k)) m.set(k,x); }); return m; };
+    const B=mapa(b), L=mapa(l), R=mapa(r);
+    const ids=[...R.keys(), ...[...L.keys()].filter(k=>!R.has(k))];
+    const out=[];
+    ids.forEach(k=>{ const v=merge3(B.get(k),L.get(k),R.get(k),pl); if(v!==undefined) out.push(v); });
+    return out;
+  }
+  if(_isPrimArr(l) && _isPrimArr(r) && (b===undefined || _isPrimArr(b))){
+    const sB=new Set((b||[]).map(stableStr)), sL=new Set(l.map(stableStr)), sR=new Set(r.map(stableStr));
+    const out=[], vistos=new Set();
+    [...l,...r].forEach(x=>{
+      const k=stableStr(x); if(vistos.has(k)) return; vistos.add(k);
+      if(sB.has(k) && (!sL.has(k) || !sR.has(k))) return; // removido em um dos lados
+      out.push(x);
+    });
+    return out;
+  }
+  return pl ? l : r;               // conflito real no mesmo campo → vale a edição mais recente
 }
-document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="hidden") nuvemFlush(); });
-window.addEventListener("pagehide",nuvemFlush);
-function nuvemEnviar(){
-  if(!_docRef) return;
-  _ultimoEnvioTs = DB.updatedAt || Date.now();
-  _docRef.set({
-    json: JSON.stringify(DB),
-    updatedAt: _ultimoEnvioTs,
-    atualizadoEm: new Date().toISOString()
-  }).then(()=>{
-    setSyncStatus(navigator.onLine?"ok":"off", navigator.onLine?"Sincronizado":"Offline (salvo aqui)");
-  }).catch(e=>{
-    setSyncStatus("err","Erro ao salvar");
-    console.warn("Falha ao enviar para a nuvem:", e);
+function semMeta(o){ const c=Object.assign({},o||{}); delete c.updatedAt; return c; }
+function mesmoConteudo(a,b){ return stableStr(semMeta(a))===stableStr(semMeta(b)); }
+/* lançamentos fixos gerados em dois aparelhos antes da v2 podem duplicar: fica um só */
+function dedupeRecorrentes(db){
+  if(!Array.isArray(db.transacoes)) return;
+  const melhor=new Map();
+  db.transacoes.forEach(t=>{
+    if(!t.recorrenciaId) return;
+    const k=t.recorrenciaId+"|"+(t.competencia||t.data);
+    const p=melhor.get(k);
+    if(!p || (t.status==="efetivado" && p.status!=="efetivado")) melhor.set(k,t);
   });
+  db.transacoes=db.transacoes.filter(t=>!t.recorrenciaId || melhor.get(t.recorrenciaId+"|"+(t.competencia||t.data))===t);
+}
+function mesclar(base, local, remoto, preferirLocal){
+  const pl = preferirLocal!==undefined ? preferirLocal : (local.updatedAt||0)>=(remoto.updatedAt||0);
+  const m=JSON.parse(JSON.stringify(merge3(base?semMeta(base):undefined, semMeta(local), semMeta(remoto), pl)));
+  dedupeRecorrentes(m);
+  m.updatedAt=Math.max(local.updatedAt||0, remoto.updatedAt||0);
+  return m;
 }
 
-/* ---- recepção (dados vindos da nuvem) ---- */
-function nuvemAplicarRemoto(dadosJson){
-  let d; try{ d=JSON.parse(dadosJson); }catch(e){ return; }
-  if(!d || !d.contas) return;
+/* base (última versão em comum com a nuvem), por usuário */
+function baseKey(){ return _fbUser ? "mf_base_"+_fbUser.uid : null; }
+function lerBase(){ const k=baseKey(); if(!k) return null; try{ const s=localStorage.getItem(k); return s?JSON.parse(s):null; }catch(e){ return null; } }
+function gravarBase(obj){
+  const k=baseKey(); if(!k) return;
+  const v=JSON.stringify(obj);
+  try{ localStorage.setItem(k,v); }
+  catch(e){ try{ localStorage.removeItem("mf_backups"); localStorage.setItem(k,v); }catch(e2){ console.warn("Sem espaço para a base de sincronização.",e2); } }
+}
+function localSujo(){ const b=lerBase(); return !b || !mesmoConteudo(DB,b); }
+
+/* cópias automáticas de segurança (até 3, neste aparelho) */
+function lerBackups(){ try{ return JSON.parse(localStorage.getItem("mf_backups")||"[]"); }catch(e){ return []; } }
+function guardarBackup(motivo, obj){
+  try{
+    const json=JSON.stringify(obj);
+    if(json.length>700000) return;              // grande demais para guardar cópias no navegador
+    const arr=lerBackups();
+    arr.unshift({ts:Date.now(), motivo, n:(obj.transacoes||[]).length, json});
+    localStorage.setItem("mf_backups", JSON.stringify(arr.slice(0,3)));
+  }catch(e){ try{ localStorage.removeItem("mf_backups"); }catch(_){} }
+}
+function backupDiario(){
+  if(!(DB.transacoes||[]).length) return;
+  const b=lerBackups()[0];
+  if(!b || new Date(b.ts).toDateString()!==new Date().toDateString()) guardarBackup("cópia diária", DB);
+}
+function backupSeEncolher(antes, depois){
+  if((depois.transacoes||[]).length < (antes.transacoes||[]).length) guardarBackup("antes de sincronizar", antes);
+}
+
+function aplicarLocal(obj){
   _aplicandoRemoto=true;
-  DB=d;
-  DB.contas ||= []; DB.categorias ||= []; DB.transacoes ||= [];
-  DB.investimentos ||= []; DB.orcamentos ||= []; DB.objetivos ||= []; DB.recorrencias ||= [];
-  DB.recorrencias.forEach(r=>{ r.puladas ||= []; });
-  if(typeof DB.updatedAt!=="number") DB.updatedAt=0;
-  safeSet(JSON.stringify(DB));     // grava local SEM reenviar
+  DB=obj; safeSet(JSON.stringify(obj));
   _aplicandoRemoto=false;
   if(typeof render==="function") render();
 }
+function statusSincronizado(){
+  _ultimoSyncOk=Date.now(); _syncFalhas=0;
+  setSyncStatus(navigator.onLine?"ok":"off", navigator.onLine?"Sincronizado":"Offline (salvo aqui)");
+  const el=document.getElementById("syncChip");
+  if(el) el.title="Última sincronização: "+new Date(_ultimoSyncOk).toLocaleString("pt-BR")+" · clique para sincronizar agora";
+}
+
+/* ---- agendamento ---- */
+function nuvemAgendarEnvio(ms){
+  if(!_docRef || _aplicandoRemoto) return;
+  if(_servidorVisto) setSyncStatus("sync","Salvando…");
+  clearTimeout(_pushTimer);
+  _pushTimer=setTimeout(()=>{ _pushTimer=null; nuvemSincronizar(); }, ms==null?900:ms);
+}
+/* iOS congela timers ao trocar de app/bloquear a tela: tenta enviar já.
+   Se não der tempo, as mudanças continuam aqui e sobem ao reabrir o app. */
+function nuvemFlush(){
+  if(_pushTimer){ clearTimeout(_pushTimer); _pushTimer=null; nuvemSincronizar(); }
+}
+document.addEventListener("visibilitychange",()=>{
+  if(document.visibilityState==="hidden") nuvemFlush();
+  else if(_docRef && _servidorVisto) nuvemAgendarEnvio(300);   // voltou ao app → confere pendências
+});
+window.addEventListener("pagehide",nuvemFlush);
+
+/* ---- envio: transação lê a nuvem, mescla e grava ---- */
+function nuvemSincronizar(){
+  if(!_docRef || !_servidorVisto) return;          // nunca envia antes de conhecer a versão do servidor
+  if(_syncEmCurso){ _syncDeNovo=true; return; }
+  if(!localSujo()){ statusSincronizado(); return; }
+  if(!navigator.onLine){ setSyncStatus("off","Offline (salvo aqui)"); return; }
+  _syncEmCurso=true;
+  setSyncStatus("sync","Salvando…");
+  const ref=_docRef;
+  const localIni=JSON.parse(JSON.stringify(DB));
+  const base=lerBase();
+  let enviado=null;
+  _fbDB.runTransaction(async tx=>{
+    const snap=await tx.get(ref);
+    let final=localIni;
+    if(snap.exists){
+      const d=snap.data()||{};
+      let rem=null; try{ rem=JSON.parse(d.json); }catch(e){}
+      if(rem && rem.contas){
+        rem.updatedAt=d.updatedAt||rem.updatedAt||0;
+        if(!(base && mesmoConteudo(base,rem))) final=mesclar(base, localIni, rem);
+      }
+    }
+    final=JSON.parse(JSON.stringify(final));
+    final.updatedAt=Math.max(Date.now(), (final.updatedAt||0)+1);
+    const json=JSON.stringify(final);
+    if(json.length>1000000){ const e=new Error("Dados acima de 1 MB"); e.code="mf/too-big"; throw e; }
+    tx.set(ref,{ json, updatedAt:final.updatedAt, atualizadoEm:new Date().toISOString(),
+      dispositivo:(navigator.userAgent||"").slice(0,120) });
+    enviado=final;
+  }).then(()=>{
+    if(ref!==_docRef) return;                      // trocou de conta no meio do envio
+    gravarBase(enviado);
+    const atual=DB;
+    if(mesmoConteudo(atual,localIni)){
+      if(!mesmoConteudo(atual,enviado)){ backupSeEncolher(atual,enviado); aplicarLocal(enviado); }
+      else { DB.updatedAt=enviado.updatedAt; safeSet(JSON.stringify(DB)); }
+    }else{
+      // houve edição durante o envio: mantém as duas coisas
+      const novo=mesclar(localIni, atual, enviado, true);
+      aplicarLocal(novo);
+      _syncDeNovo=true;
+    }
+    statusSincronizado();
+  }).catch(e=>{
+    console.warn("Falha ao sincronizar:", e);
+    if(e && e.code==="mf/too-big"){ setSyncStatus("err","Dados acima do limite da nuvem"); return; }
+    _syncFalhas++;
+    setSyncStatus(navigator.onLine?"err":"off", navigator.onLine?"Erro ao sincronizar — tentando de novo":"Offline (salvo aqui)");
+    if(navigator.onLine) setTimeout(()=>nuvemAgendarEnvio(0), Math.min(60000, 4000*_syncFalhas));
+  }).finally(()=>{
+    _syncEmCurso=false;
+    if(_syncDeNovo){ _syncDeNovo=false; nuvemAgendarEnvio(300); }
+  });
+}
+
+/* ---- recepção: chegou versão nova do servidor ---- */
 function nuvemOnSnapshot(snap){
-  const local = DB.updatedAt || 0;
-  if(!snap.exists){
-    if(_primeiraSync){ _primeiraSync=false; nuvemEnviar(); }  // nuvem vazia → semeia
-    else setSyncStatus("ok","Sincronizado");
+  const meta=snap.metadata||{};
+  if(meta.hasPendingWrites) return;                // eco de gravação local
+  if(meta.fromCache){                               // cópia em cache pode estar velha: espera o servidor
+    if(!_servidorVisto) setSyncStatus(navigator.onLine?"sync":"off", navigator.onLine?"Conectando…":"Offline (salvo aqui)");
     return;
   }
-  const data = snap.data() || {};
-  const remoto = data.updatedAt || 0;
+  const primeira=!_servidorVisto;
+  _servidorVisto=true;
   _primeiraSync=false;
-  if(remoto > local && data.json){
-    nuvemAplicarRemoto(data.json);        // nuvem mais nova → adota
-    setSyncStatus("ok","Sincronizado");
-  } else if(local > remoto){
-    nuvemEnviar();                         // o daqui é mais novo → envia
-  } else {
-    setSyncStatus("ok","Sincronizado");    // iguais (inclui eco do próprio envio)
+  if(primeira) backupDiario();
+  const base=lerBase();
+
+  if(!snap.exists){                                 // nuvem vazia → semeia com o que há aqui
+    nuvemAgendarEnvio(0);
+    return;
   }
+  const data=snap.data()||{};
+  let remoto=null; try{ remoto=JSON.parse(data.json); }catch(e){}
+  if(!remoto || !remoto.contas){ nuvemAgendarEnvio(0); return; }
+  remoto.updatedAt=data.updatedAt||remoto.updatedAt||0;
+
+  // aparelho novo (nunca editado aqui): adota a nuvem
+  if(!base && !(DB.updatedAt>0)){
+    gravarBase(remoto);
+    aplicarLocal(remoto);
+    statusSincronizado();
+    return;
+  }
+  // a nuvem não mudou desde a última sincronização deste aparelho
+  if(base && mesmoConteudo(base,remoto)){
+    if(localSujo()) nuvemAgendarEnvio(0); else statusSincronizado();
+    return;
+  }
+  // a nuvem mudou: mescla com o que existe aqui
+  const merged=mesclar(base, DB, remoto);
+  gravarBase(remoto);
+  if(!mesmoConteudo(merged,DB)){ backupSeEncolher(DB,merged); aplicarLocal(merged); }
+  if(mesmoConteudo(merged,remoto)) statusSincronizado();
+  else nuvemAgendarEnvio(0);                        // havia mudanças só deste aparelho → envia
 }
 
 /* ---- autenticação ---- */
@@ -4246,8 +4443,9 @@ function nuvemIniciar(){
   document.getElementById("btnSair").onclick=()=>{
     if(!confirm("Sair da conta neste aparelho? Seus dados continuam na nuvem e serão removidos deste navegador.")) return;
     nuvemFlush(); // garante que a última edição subiu antes de limpar
+    const bk=baseKey();
     _fbAuth.signOut().then(()=>{
-      try{ localStorage.removeItem(STORE_KEY); }catch(e){}
+      try{ localStorage.removeItem(STORE_KEY); if(bk) localStorage.removeItem(bk); localStorage.removeItem("mf_backups"); }catch(e){}
       memStore=null;
       DB=novoBanco(); DB.updatedAt=0;
       safeSet(JSON.stringify(DB)); // sem salvar(): não deve reenviar à nuvem
@@ -4256,7 +4454,9 @@ function nuvemIniciar(){
     });
   };
   window.addEventListener("offline",()=>setSyncStatus("off","Offline"));
-  window.addEventListener("online", ()=>setSyncStatus("sync","Reconectando…"));
+  window.addEventListener("online", ()=>{ setSyncStatus("sync","Reconectando…"); if(_servidorVisto) nuvemAgendarEnvio(500); });
+  const chip=document.getElementById("syncChip");
+  if(chip){ chip.style.cursor="pointer"; chip.onclick=()=>{ if(_docRef && _servidorVisto) nuvemAgendarEnvio(0); }; }
 
   _fbAuth.onAuthStateChanged(user=>{
     _fbUser=user;
@@ -4266,12 +4466,12 @@ function nuvemIniciar(){
       if(acct) acct.style.display="flex";
       const em=document.getElementById("acctEmail"); if(em) em.textContent=user.email||"";
       _docRef=_fbDB.collection("usuarios").doc(user.uid).collection("financas").doc("dados");
-      _primeiraSync=true;
+      _primeiraSync=true; _servidorVisto=false;
       setSyncStatus("sync","Conectando…");
       if(_unsub) _unsub();
-      _unsub=_docRef.onSnapshot(nuvemOnSnapshot, err=>{ setSyncStatus("err","Sem conexão"); console.warn(err); });
+      _unsub=_docRef.onSnapshot({includeMetadataChanges:true}, nuvemOnSnapshot, err=>{ setSyncStatus("err","Sem conexão"); console.warn(err); });
     }else{
-      _docRef=null; if(_unsub){ _unsub(); _unsub=null; }
+      _docRef=null; _servidorVisto=false; if(_unsub){ _unsub(); _unsub=null; }
       if(acct) acct.style.display="none";
       mostrarGate(true);
     }

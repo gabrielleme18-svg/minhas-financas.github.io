@@ -1085,17 +1085,23 @@ function limparOcorrenciasForaDaRegra(db){
   const h=hoje();
   const antes=db.transacoes.length;
   db.transacoes=db.transacoes.filter(t=>{
-    if(!t.recorrenciaId) return true;
-    if(t.status!=="pendente" || t.editadoManual) return true;   // confirmado ou editado à mão: preserva
-    const R=regras.get(t.recorrenciaId);
+    if(!t.recorrenciaId) return true;                 // lançamento avulso
+    if(t.editadoManual) return true;                  // ajustado à mão para este mês
     const comp=t.competencia||t.data;
-    // regra apagada ou série desativada: só descarta o que ainda está por vir,
-    // para não sumir com uma conta vencida que continua em aberto
-    if(!R) return comp<h;
-    if(R.ativa===false) return comp<h;
-    if(R.dataInicio && comp<R.dataInicio) return false;           // antes do início da regra
-    if(R.dataFim && comp>R.dataFim) return false;                 // série encerrada ou dividida aqui
-    if(R.puladas && R.puladas.includes(comp)) return false;       // ocorrência pulada
+    const futuro = comp>=h;
+    // Pagamento já confirmado no passado é histórico: nunca é tocado.
+    // No futuro, "pago" é só o jeito da série lançar — conta como agendamento.
+    if(t.status!=="pendente" && !futuro) return true;
+    const R=regras.get(t.recorrenciaId);
+    // Regra apagada ou série desativada: descarta só o que ainda está por vir,
+    // para não sumir com uma conta vencida e ainda em aberto.
+    if(!R) return !futuro;
+    if(R.ativa===false) return !futuro;
+    // Nada antes do início da regra é descartado: o PRIMEIRO lançamento de uma
+    // série fica justamente antes de dataInicio (a regra começa no período
+    // seguinte e este lançamento é a âncora dela).
+    if(R.dataFim && comp>R.dataFim) return false;     // série encerrada ou dividida aqui
+    if(R.puladas && R.puladas.includes(comp)) return false;   // ocorrência pulada
     return true;
   });
   return db.transacoes.length!==antes;
@@ -1248,6 +1254,13 @@ function aplicarEdicaoRegra(R, campos, dur, escopo, mesRef){
   }
   if(escopo==="futuras"){
     const comp=ocorrenciaNoMes(R, mesRef);
+    // O prazo da série é preservado: dividir no meio não pode reiniciar a
+    // contagem, senão a série passa a terminar bem depois do previsto.
+    // Só quando o prazo é alterado no formulário é que ele vale a partir do corte.
+    const durOrig=duracaoDeRegra(R);
+    const prazoMudou = !dur || dur.modo!==durOrig.modo ||
+      (dur.modo==="periodo" && (Number(dur.qtd)!==Number(durOrig.qtd) || dur.unid!==durOrig.unid));
+    const fimOrig=R.dataFim||null;
     R.dataFim=addDias(comp,-1);
     DB.transacoes=DB.transacoes.filter(x=>!(x.recorrenciaId===R.id && x.status==="pendente" && (x.competencia||x.data)>=comp));
     const ym=comp.slice(0,7);
@@ -1255,7 +1268,7 @@ function aplicarEdicaoRegra(R, campos, dur, escopo, mesRef){
     const start=`${ym}-${String(Math.min(dia,diasNoMes(ym))).padStart(2,"0")}`;
     const N={ id:idRegraDividida(R,start), tipo:campos.tipo, valor:campos.valor, descricao:campos.descricao,
       categoriaId:campos.categoriaId, contaId:campos.contaId, frequencia:campos.frequencia,
-      diaBase:dia, dataInicio:start, dataFim:calcFimDuracao(start,dur), lancarStatus:campos.lancarStatus, ativa:true,
+      diaBase:dia, dataInicio:start, dataFim:(prazoMudou? calcFimDuracao(start,dur) : fimOrig), lancarStatus:campos.lancarStatus, ativa:true,
       puladas:(R.puladas||[]).filter(p=>p>=start) };
     porRegra(N);
     const temHist=DB.transacoes.some(x=>x.recorrenciaId===R.id);

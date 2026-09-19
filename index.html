@@ -606,7 +606,9 @@ function carregar(){
   DB.dividas.forEach(d=>{ d.modo ||= "simples"; if(d.modo==="cartao"){ d.faturas ||= []; d.faturas.forEach(f=>{ f.cartao ||= ""; }); } });
   DB.recorrencias.forEach(r=>{ r.puladas ||= []; });
   if(typeof DB.updatedAt!=="number") DB.updatedAt=0;
+  _limpezaPendente = limparOcorrenciasForaDaRegra(DB);
 }
+let _limpezaPendente=false;
 /* salvar(true) = gravação automática (ex.: gerar lançamentos fixos). Não conta como edição do usuário. */
 function salvar(auto){ if(!auto && !_aplicandoRemoto) DB.updatedAt = Date.now(); safeSet(JSON.stringify(DB)); renderSidebar(); nuvemAgendarEnvio(); }
 
@@ -1058,6 +1060,46 @@ function proximaOcorrencia(r){
   for(const d of ocorrenciasRegra(r,horizon)){ if(d>=h && !(r.puladas&&r.puladas.includes(d))) return d; }
   return null;
 }
+/* id da regra criada ao dividir uma série numa competência.
+   É derivado da série original + data do corte, então dois aparelhos que
+   fizerem a mesma edição chegam à MESMA regra (em vez de criar duas). */
+function idRegraDividida(R, start){
+  const raiz=String(R.id).split("#")[0];
+  return raiz+"#"+start;
+}
+/* insere a regra nova, substituindo uma de mesmo id (divisão repetida no mesmo mês) */
+function porRegra(N){
+  const i=DB.recorrencias.findIndex(x=>x.id===N.id);
+  if(i>=0) DB.recorrencias[i]=N; else DB.recorrencias.push(N);
+  return N;
+}
+/* Remove lançamentos GERADOS por uma regra que não deveriam mais existir:
+   competência fora da janela da regra (a série foi encerrada ou dividida),
+   data pulada, ou regra inexistente. Só mexe no que ainda está pendente e
+   não foi editado à mão — histórico e lançamentos confirmados nunca são tocados.
+   É idempotente e roda em todos os aparelhos, então uma ocorrência antiga que
+   volte por uma mesclagem desaparece de novo sozinha. */
+function limparOcorrenciasForaDaRegra(db){
+  if(!db || !Array.isArray(db.transacoes)) return false;
+  const regras=new Map((db.recorrencias||[]).map(r=>[r.id,r]));
+  const h=hoje();
+  const antes=db.transacoes.length;
+  db.transacoes=db.transacoes.filter(t=>{
+    if(!t.recorrenciaId) return true;
+    if(t.status!=="pendente" || t.editadoManual) return true;   // confirmado ou editado à mão: preserva
+    const R=regras.get(t.recorrenciaId);
+    const comp=t.competencia||t.data;
+    // regra apagada ou série desativada: só descarta o que ainda está por vir,
+    // para não sumir com uma conta vencida que continua em aberto
+    if(!R) return comp<h;
+    if(R.ativa===false) return comp<h;
+    if(R.dataInicio && comp<R.dataInicio) return false;           // antes do início da regra
+    if(R.dataFim && comp>R.dataFim) return false;                 // série encerrada ou dividida aqui
+    if(R.puladas && R.puladas.includes(comp)) return false;       // ocorrência pulada
+    return true;
+  });
+  return db.transacoes.length!==antes;
+}
 /* remove lançamentos gerados ainda não confirmados a partir de hoje */
 function limparFuturosPendentes(ruleId){
   const h=hoje();
@@ -1129,7 +1171,7 @@ function editarRecorrenteOcorrencia(t, campos, escopo){
   const ym=comp.slice(0,7);
   const dia=Number((campos.data||comp).split("-")[2])||Number(comp.split("-")[2]);
   const start=`${ym}-${String(Math.min(dia,diasNoMes(ym))).padStart(2,"0")}`;
-  const N={ id:uid(), tipo:campos.tipo, valor:campos.valor, descricao:campos.descricao,
+  const N={ id:idRegraDividida(R,start), tipo:campos.tipo, valor:campos.valor, descricao:campos.descricao,
     categoriaId:campos.categoriaId, contaId:campos.contaId,
     frequencia:R.frequencia, diaBase:dia, dataInicio:start, dataFim:origFim,
     lancarStatus:R.lancarStatus||"pendente", ativa:true,
@@ -1139,7 +1181,7 @@ function editarRecorrenteOcorrencia(t, campos, escopo){
     .filter(x=>x.recorrenciaId===R.id && x.id!==t.id && (x.competencia||x.data)>=comp)
     .map(x=>(x.competencia||x.data).slice(0,7)));
   ocorrenciasRegra(N, ultimoDiaMes(addMes(mesAtual(),18))).forEach(iso=>{ if(mesesOcupados.has(iso.slice(0,7)) && !N.puladas.includes(iso)) N.puladas.push(iso); });
-  DB.recorrencias.push(N);
+  porRegra(N);
   // 4) a ocorrência atual passa a pertencer à nova regra
   const j=DB.transacoes.findIndex(x=>x.id===t.id);
   DB.transacoes[j]={ ...t, ...campos, data:start, competencia:start, recorrenciaId:N.id, recorrente:true };
@@ -1211,11 +1253,11 @@ function aplicarEdicaoRegra(R, campos, dur, escopo, mesRef){
     const ym=comp.slice(0,7);
     const dia=Number(campos.dataInicio.split("-")[2])||Number(comp.split("-")[2]);
     const start=`${ym}-${String(Math.min(dia,diasNoMes(ym))).padStart(2,"0")}`;
-    const N={ id:uid(), tipo:campos.tipo, valor:campos.valor, descricao:campos.descricao,
+    const N={ id:idRegraDividida(R,start), tipo:campos.tipo, valor:campos.valor, descricao:campos.descricao,
       categoriaId:campos.categoriaId, contaId:campos.contaId, frequencia:campos.frequencia,
       diaBase:dia, dataInicio:start, dataFim:calcFimDuracao(start,dur), lancarStatus:campos.lancarStatus, ativa:true,
       puladas:(R.puladas||[]).filter(p=>p>=start) };
-    DB.recorrencias.push(N);
+    porRegra(N);
     const temHist=DB.transacoes.some(x=>x.recorrenciaId===R.id);
     const temOcc=ocorrenciasRegra(R, ultimoDiaMes(addMes(mesAtual(),18))).some(d=>!(R.puladas&&R.puladas.includes(d)));
     if(!temHist && !temOcc) DB.recorrencias=DB.recorrencias.filter(x=>x.id!==R.id);
@@ -1368,7 +1410,7 @@ let _lastSecaoRender=null;
 function render(){
   const _scrollY=(_lastSecaoRender===state.secao)? window.scrollY : 0; // mantém a rolagem ao atualizar a mesma tela
   carregar();
-  if(sincronizarRecorrencias()) salvar(true);
+  if(sincronizarRecorrencias() || _limpezaPendente){ _limpezaPendente=false; salvar(true); }
   document.getElementById("monthLabel").textContent=nomeMes(state.mes);
   if(!SECOES.find(s=>s.id===state.secao)) state.secao="dashboard";
   const sec=SECOES.find(s=>s.id===state.secao);
@@ -4234,6 +4276,7 @@ function mesclar(base, local, remoto, preferirLocal){
   const pl = preferirLocal!==undefined ? preferirLocal : (local.updatedAt||0)>=(remoto.updatedAt||0);
   const m=JSON.parse(JSON.stringify(merge3(base?semMeta(base):undefined, semMeta(local), semMeta(remoto), pl)));
   dedupeRecorrentes(m);
+  limparOcorrenciasForaDaRegra(m);
   m.updatedAt=Math.max(local.updatedAt||0, remoto.updatedAt||0);
   return m;
 }

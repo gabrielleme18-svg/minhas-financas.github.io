@@ -607,6 +607,7 @@ function carregar(){
   DB.recorrencias.forEach(r=>{ r.puladas ||= []; });
   if(typeof DB.updatedAt!=="number") DB.updatedAt=0;
   _limpezaPendente = limparOcorrenciasForaDaRegra(DB);
+  if(podarFuturoDistante(DB)) _limpezaPendente=true;
 }
 let _limpezaPendente=false;
 /* salvar(true) = gravação automática (ex.: gerar lançamentos fixos). Não conta como edição do usuário. */
@@ -1103,6 +1104,28 @@ function limparOcorrenciasForaDaRegra(db){
     if(R.dataFim && comp>R.dataFim) return false;     // série encerrada ou dividida aqui
     if(R.puladas && R.puladas.includes(comp)) return false;   // ocorrência pulada
     return true;
+  });
+  return db.transacoes.length!==antes;
+}
+/* Até onde vale a pena guardar lançamentos gerados. A geração vai até 12 meses
+   depois do mês que está na tela; podamos só bem além disso, para nunca apagar
+   o que acabou de ser criado. */
+function limitePoda(){
+  const base=maxMes(mesAtual(), (typeof state!=="undefined" && state.mes)||mesAtual());
+  return ultimoDiaMes(maxMes(addMes(mesAtual(),24), addMes(base,12)));
+}
+/* Descarta lançamentos de séries fixas muito à frente no tempo. Eles são
+   recriados sozinhos assim que você navegar até lá, então não se perde nada —
+   e é isso que impede o arquivo de crescer sem parar até estourar o limite da
+   nuvem. Nunca toca em confirmados, editados à mão ou avulsos. */
+function podarFuturoDistante(db){
+  if(!db || !Array.isArray(db.transacoes)) return false;
+  const lim=limitePoda();
+  const antes=db.transacoes.length;
+  db.transacoes=db.transacoes.filter(t=>{
+    if(!t.recorrenciaId || t.editadoManual) return true;
+    if(t.status!=="pendente") return true;
+    return (t.competencia||t.data) <= lim;
   });
   return db.transacoes.length!==antes;
 }
@@ -4471,6 +4494,7 @@ function mesclar(base, local, remoto, preferirLocal){
   const m=JSON.parse(JSON.stringify(merge3(base?semMeta(base):undefined, semMeta(local), semMeta(remoto), pl)));
   dedupeRecorrentes(m);
   limparOcorrenciasForaDaRegra(m);
+  podarFuturoDistante(m);
   m.updatedAt=Math.max(local.updatedAt||0, remoto.updatedAt||0);
   return m;
 }
@@ -4597,7 +4621,10 @@ function nuvemSincronizar(){
     final=JSON.parse(JSON.stringify(final));
     final.updatedAt=Math.max(Date.now(), (final.updatedAt||0)+1);
     const json=JSON.stringify(final);
-    if(json.length>1000000){ const e=new Error("Dados acima de 1 MB"); e.code="mf/too-big"; throw e; }
+    // o limite do Firestore é em BYTES; acentos ocupam 2, então contar
+    // caracteres subestimava o tamanho real do documento
+    let bytes; try{ bytes=new TextEncoder().encode(json).length; }catch(e){ bytes=json.length; }
+    if(bytes>1000000){ const e=new Error("Dados acima de 1 MB"); e.code="mf/too-big"; e.bytes=bytes; throw e; }
     tx.set(ref,{ json, updatedAt:final.updatedAt, atualizadoEm:new Date().toISOString(),
       dispositivo:(navigator.userAgent||"").slice(0,120) });
     enviado=final;
@@ -4617,7 +4644,17 @@ function nuvemSincronizar(){
     statusSincronizado();
   }).catch(e=>{
     console.warn("Falha ao sincronizar:", e);
-    if(e && e.code==="mf/too-big"){ setSyncStatus("err","Dados acima do limite da nuvem"); return; }
+    if(e && e.code==="mf/too-big"){
+      // tenta liberar espaço sozinho antes de desistir
+      if(podarFuturoDistante(DB)){
+        salvar(true);
+        setSyncStatus("sync","Liberando espaço…");
+        setTimeout(()=>nuvemAgendarEnvio(0), 400);
+        return;
+      }
+      setSyncStatus("err","Nuvem cheia — veja Backup / Restaurar");
+      return;
+    }
     _syncFalhas++;
     setSyncStatus(navigator.onLine?"err":"off", navigator.onLine?"Erro ao sincronizar — tentando de novo":"Offline (salvo aqui)");
     if(navigator.onLine) setTimeout(()=>nuvemAgendarEnvio(0), Math.min(60000, 4000*_syncFalhas));

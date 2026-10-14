@@ -1918,10 +1918,15 @@ function cardDividas(){
 /* ---------------- TRANSAÇÕES (tabela estilo PlannerFin) ---------------- */
 function viewTransacoes(){
   const mk=state.mes;
-  let tx=txDoMes(mk);
+  // Com algo digitado na busca, procura em TODOS os meses. Antes a busca só
+  // olhava o mês na tela, então um lançamento com a data errada ficava
+  // impossível de achar sem saber em que mês ele tinha caído.
+  const buscaGlobal=!!(state.txBusca||"").trim();
+  let tx = buscaGlobal ? DB.transacoes.slice() : txDoMes(mk);
   const rec=totalMes(mk,"receita"), desp=totalMes(mk,"despesa");
   const despPend=totalMes(mk,"despesa","pendente");
-  const nRec=tx.filter(t=>t.tipo==="receita").length, nDesp=tx.filter(t=>t.tipo==="despesa").length;
+  const doMes=txDoMes(mk);
+  const nRec=doMes.filter(t=>t.tipo==="receita").length, nDesp=doMes.filter(t=>t.tipo==="despesa").length;
 
   /* filtros */
   if(state.filtroTx==="receitas") tx=tx.filter(t=>t.tipo==="receita");
@@ -2019,12 +2024,12 @@ function viewTransacoes(){
       <tbody>${tx.map(linha).join("")}</tbody>
     </table></div>
     <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:14px;font-size:12.5px;font-weight:600;color:var(--ink-soft)">
-      <span>${tx.length} transaç${tx.length===1?"ão":"ões"}${filtrosAtivos?" com os filtros aplicados":" no mês"}</span>
+      <span>${tx.length} transaç${tx.length===1?"ão":"ões"}${buscaGlobal?" em todos os meses":(filtrosAtivos?" com os filtros aplicados":" no mês")}</span>
       <div style="flex:1"></div>
       ${filtrosAtivos?`<span>Resultado (receitas − despesas): <b class="num" style="color:${somaFiltro>=0?"var(--income)":"var(--expense)"}">${fmt(somaFiltro)}</b></span>`:""}
     </div>`
     : (filtrosAtivos
-        ? emptyBig("Nenhuma transação com esses filtros","Ajuste os filtros ou use “Limpar filtros” para ver todas as transações do mês.")
+        ? emptyBig(buscaGlobal?"Nada encontrado em nenhum mês":"Nenhuma transação com esses filtros", buscaGlobal?"Nenhum lançamento, em qualquer mês, combina com o que você digitou.":"Ajuste os filtros ou use “Limpar filtros” para ver todas as transações do mês.")
         : emptyBig("Nenhuma transação aqui","Use o botão “Nova Transação” para registrar uma receita, despesa ou transferência."))}
   </div>`;
 }
@@ -3093,8 +3098,46 @@ overlay.addEventListener("click",e=>{ if(e.target===overlay || e.target.closest(
 function modalHead(t){ return `<div class="modal-head"><h2>${t}</h2><button class="icon-btn" data-close><svg viewBox="0 0 24 24" width="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>`; }
 
 /* ---- lançamento ---- */
+/* O lançamento recém-salvo passaria pelos filtros da aba Transações? */
+function passaNosFiltros(t){
+  if(!t) return true;
+  const f=state.filtroTx;
+  if(f==="receitas" && t.tipo!=="receita") return false;
+  if(f==="despesas" && t.tipo!=="despesa") return false;
+  if(f==="transferencias" && t.tipo!=="transferencia") return false;
+  if((state.txStatus==="efetivado"||state.txStatus==="pendente") && t.status!==state.txStatus) return false;
+  if(state.txCat && state.txCat!=="todas" && t.categoriaId!==state.txCat) return false;
+  if(state.txConta && state.txConta!=="todas" && !tocaConta(t,state.txConta)) return false;
+  if(state.txFixas && !t.recorrente) return false;
+  const b=(state.txBusca||"").toLowerCase();
+  if(b && !((t.descricao||"").toLowerCase().includes(b) ||
+            catNome(t.categoriaId).toLowerCase().includes(b) ||
+            contaNome(t.contaId).toLowerCase().includes(b))) return false;
+  return true;
+}
+/* Limpa os filtros que esconderiam o lançamento recém-salvo. Sem isso ele é
+   gravado e some da lista — entra no saldo, mas não aparece —, parecendo perdido.
+   Acontecia, por exemplo, depois de clicar no sino (que deixa o filtro em
+   "Pendente") ao salvar um lançamento marcado como pago. */
+function garantirVisivel(t){
+  if(passaNosFiltros(t)) return false;
+  Object.assign(state,{filtroTx:"todos", txStatus:"todos", txCat:"todas",
+                       txConta:"todas", txFixas:false, txBusca:""});
+  return true;
+}
+
+/* Data sugerida ao criar um lançamento: se você está vendo outro mês, ela
+   acompanha esse mês. Antes vinha sempre a data de hoje, e o lançamento ia
+   parar num mês diferente do que estava na tela, parecendo que sumiu. */
+function dataPadraoNovoLancamento(){
+  const h=hoje();
+  const mk=(typeof state!=="undefined" && state.mes) || mesAtual();
+  if(mk===h.slice(0,7)) return h;
+  const dia=Math.min(Number(h.slice(8,10)), diasNoMes(mk));
+  return `${mk}-${String(dia).padStart(2,"0")}`;
+}
 function modalTransacao(edit){
-  const t=edit||{tipo:"despesa",status:"efetivado",data:hoje(),contaId:DB.contas[0]?.id};
+  const t=edit||{tipo:"despesa",status:"efetivado",data:dataPadraoNovoLancamento(),contaId:DB.contas[0]?.id};
   const opcCat=tp=>DB.categorias.filter(c=>c.tipo===tp).map(c=>`<option value="${c.id}" ${c.id===t.categoriaId?"selected":""}>${c.icone} ${escapeHtml(c.nome)}</option>`).join("");
   const contasOpc=(selId,allowEmpty)=>DB.contas.filter(c=>!c.arquivada).map(c=>`<option value="${c.id}" ${c.id===selId?"selected":""}>${escapeHtml(c.nome)}</option>`).join("");
   const origDef = t.contaId || DB.contas[0]?.id;
@@ -3214,6 +3257,13 @@ function modalTransacao(edit){
   document.getElementById("fSave").onclick=()=>{
     const valor=parseValor(document.getElementById("fVal").value);
     if(valor<=0){ toast("Informe um valor válido.","err"); return; }
+    // Ano fora do razoável quase sempre é erro de digitação (ex.: 27 virando
+    // o ano 0027). O lançamento ficava gravado num mês inalcançável.
+    const _data=document.getElementById("fData").value||hoje();
+    const _ano=Number(String(_data).slice(0,4));
+    if(!(_ano>=1990 && _ano<=2100)){
+      toast("Data com ano "+String(_data).slice(0,4)+". Confira o ano antes de salvar.","err"); return;
+    }
     if(edit && !DB.transacoes.some(x=>x.id===t.id)){ toast("Este lançamento foi alterado em outro aparelho. A tela foi atualizada.","err"); closeModal(); render(); return; }
     const ehTransf = tipo==="transferencia";
     let campos;
@@ -3238,23 +3288,32 @@ function modalTransacao(edit){
         data:document.getElementById("fData").value||hoje(),
         status:document.getElementById("fPend").checked?"pendente":"efetivado" };
     }
-    let msg;
+    let msg, salvoTx=null;
     if(edit && t.recorrenciaId && !ehTransf){
       msg=editarRecorrenteOcorrencia(t, campos, escopo);
+      salvoTx=DB.transacoes.find(x=>x.id===t.id) || { ...t, ...campos };
     } else if(edit){
       const i=DB.transacoes.findIndex(x=>x.id===t.id);
       DB.transacoes[i]={ ...t, id:t.id, ...campos };
+      salvoTx=DB.transacoes[i];
       msg="Lançamento atualizado.";
     } else {
-      const obj={ id:uid(), ...campos };
-      DB.transacoes.push(obj);
-      if(!ehTransf && document.getElementById("fRep")?.checked){
-        const freq=document.getElementById("fRepFreq").value;
-        let dataFim=null;
+      // valida a repetição ANTES de criar o lançamento: se a validação falhar,
+      // nada é adicionado. Antes o lançamento entrava na memória e era
+      // descartado na tela seguinte, sumindo sem aviso.
+      const repetir = !ehTransf && document.getElementById("fRep")?.checked;
+      let freq=null, dataFim=null;
+      if(repetir){
+        freq=document.getElementById("fRepFreq").value;
         if(repDur==="periodo"){
           dataFim=calcDataFimRep();
           if(!dataFim){ toast("Informe por quanto tempo a repetição deve durar.","err"); return; }
         }
+      }
+      const obj={ id:uid(), ...campos };
+      DB.transacoes.push(obj);
+      salvoTx=obj;
+      if(repetir){
         criarRecorrenciaDeLancamento(obj, freq, dataFim);
         sincronizarRecorrencias();
         msg = dataFim ? "Lançamento adicionado e repetição criada." : "Lançamento adicionado e recorrência fixa criada.";
@@ -3262,6 +3321,11 @@ function modalTransacao(edit){
         msg = ehTransf ? "Transferência registrada." : "Lançamento adicionado.";
       }
     }
+    // se o lançamento ficou num mês diferente do que está na tela, leva a tela
+    // até ele — assim dá para conferir que foi salvo, em vez de parecer perdido.
+    const mkTx=String(campos.data||"").slice(0,7);
+    if(mkTx && mkTx!==state.mes){ state.mes=mkTx; msg+=" Em "+nomeMes(mkTx)+"."; }
+    if(garantirVisivel(salvoTx)) msg+=" Filtros limpos para mostrá-lo.";
     salvar(); closeModal(); render(); toast(msg);
   };
 }

@@ -1294,6 +1294,7 @@ let state={ mes:mesAtual(), secao:"dashboard", filtroTx:"todos", fluxoView:"mens
   ano:Number(hoje().slice(0,4)), prevAno:Number(hoje().slice(0,4)), prevAberto:mesAtual(),
   dashScope:"conta", balTipo:"area", balModo:"ano", anaTipo:"despesa", gastosPend:false,
   orcPend:false, txBusca:"", txFixas:false, txStatus:"todos", txCat:"todas", txConta:"todas",
+  histBusca:"", histTipo:"todos", histConta:"todas", histStatus:"todos", histOrigem:"todos", histLimite:100,
   cadTab:"resumo", divBusca:"", divStatus:"todas", metaBusca:"", metaFiltro:"todas",
   credCartao:"todos", credParc:false, credBusca:"" };
 let charts={};
@@ -1303,6 +1304,7 @@ function destroyCharts(){ Object.values(charts).forEach(c=>{try{c.destroy()}catc
 const SECOES=[
   {id:"dashboard", nome:"Dashboard", sub:"Bem-vindo de volta! Aqui está um resumo das suas finanças.", icon:'<path d="M3 9.5L12 3l9 6.5V21a1 1 0 0 1-1 1h-5v-7h-6v7H4a1 1 0 0 1-1-1z"/>'},
   {id:"transacoes", nome:"Transações", sub:"Gerencie todas as suas transações financeiras", icon:'<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/>'},
+  {id:"historico", nome:"Histórico", sub:"Todos os lançamentos, do mais recente para o mais antigo", icon:'<path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/><circle cx="7" cy="14" r="1.6"/>'},
   {id:"saldos", nome:"Saldos", sub:"Saldo atual e previsto de cada conta", icon:'<path d="M20 7H5a2 2 0 0 1 0-4h13v4"/><path d="M3 5v14a2 2 0 0 0 2 2h15V7"/><path d="M16 14h.01"/>'},
   {id:"orcamento", nome:"Orçamentos", sub:"Valor definido para cada categoria", icon:'<path d="M21.2 15.9A10 10 0 1 1 12 2v10z"/><path d="M21.2 15.9L12 12"/>'},
   {id:"dividas", nome:"Dívidas", sub:"Gerencie suas dívidas e acompanhe os pagamentos", icon:'<path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>'},
@@ -1437,6 +1439,7 @@ function render(){
   else if(state.secao==="transacoes") _html=viewTransacoes();
   else if(state.secao==="orcamento") _html=viewOrcamento();
   else if(state.secao==="dividas") _html=viewDividas();
+  else if(state.secao==="historico") _html=viewHistorico();
   else if(state.secao==="saldos") _html=viewContas();
   else if(state.secao==="cadastro") _html=viewCadastro();
   else if(state.secao==="previsao") _html=viewPrevisao();
@@ -2296,6 +2299,89 @@ function viewOrcamento(){
   <div style="font-size:11.5px;color:var(--ink-faint);font-weight:600;margin-top:10px">Digite o valor e tecle Enter (ou clique fora) para salvar. O mesmo valor vale para todos os meses.</div>`;
 }
 
+/* ---------------- HISTÓRICO (todos os lançamentos, todos os meses) ---------------- */
+function dataEstranha(iso){
+  const a=Number(String(iso||"").slice(0,4));
+  return !(a>=1990 && a<=2100);
+}
+function viewHistorico(){
+  let tx=DB.transacoes.slice();
+  const total=tx.length;
+  if(state.histTipo!=="todos") tx=tx.filter(t=>t.tipo===state.histTipo);
+  if(state.histStatus!=="todos") tx=tx.filter(t=>t.status===state.histStatus);
+  if(state.histConta!=="todas") tx=tx.filter(t=>tocaConta(t,state.histConta));
+  if(state.histOrigem==="avulso") tx=tx.filter(t=>!t.recorrenciaId);
+  else if(state.histOrigem==="fixa") tx=tx.filter(t=>!!t.recorrenciaId);
+  const b=(state.histBusca||"").trim().toLowerCase();
+  if(b) tx=tx.filter(t=>
+    (t.descricao||"").toLowerCase().includes(b) ||
+    catNome(t.categoriaId).toLowerCase().includes(b) ||
+    contaNome(t.contaId).toLowerCase().includes(b) ||
+    dataBR(t.data).includes(b));
+  tx.sort((a,c)=>c.data.localeCompare(a.data) || String(c.id).localeCompare(String(a.id)));
+  const estranhas=DB.transacoes.filter(t=>dataEstranha(t.data)).length;
+  const lim=state.histLimite||100;
+  const mostrando=tx.slice(0,lim);
+  const filtrado = state.histTipo!=="todos"||state.histStatus!=="todos"||state.histConta!=="todas"||state.histOrigem!=="todos"||!!b;
+
+  const linha=t=>{
+    const isRec=t.tipo==="receita", isTr=t.tipo==="transferencia";
+    const cat=getCat(t.categoriaId), conta=getConta(t.contaId);
+    const alerta=dataEstranha(t.data);
+    return `<tr${alerta?' style="background:var(--expense-soft)"':''}>
+      <td class="num" style="white-space:nowrap">${dataBR(t.data)}${alerta?' <span class="pill" style="background:var(--expense);color:#fff">data suspeita</span>':''}</td>
+      <td style="font-weight:700;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(t.descricao||(isTr?"Transferência":catNome(t.categoriaId)))}</td>
+      <td>${isTr?`<span class="cat-chip" style="background:var(--invest-soft);color:var(--invest)">⇄ ${escapeHtml(contaNome(t.contaId))} → ${escapeHtml(contaNome(t.contaDestinoId))}</span>`
+        :(cat?`<span class="cat-chip" style="background:${cat.cor}1c;color:${cat.cor}">${cat.icone} ${escapeHtml(cat.nome)}</span>`:"—")}</td>
+      <td>${conta?`<span style="display:inline-flex;align-items:center;gap:7px">${bancoBadge(conta,22)}<span style="font-size:12.5px;font-weight:600">${escapeHtml(conta.nome)}</span></span>`:"—"}</td>
+      <td class="t-right num" style="font-weight:800;color:${isTr?"var(--invest)":isRec?"var(--income)":"var(--expense)"}">${isRec?"+":isTr?"":"-"}${fmt(t.valor).replace("-","")}</td>
+      <td>${t.status==="efetivado"?'<span class="pill pill-ok">Pago</span>':'<span class="pill pill-pend">Pendente</span>'}</td>
+      <td>${t.recorrenciaId?'<span class="pill pill-rec">Fixa</span>':'<span style="color:var(--ink-faint);font-size:11.5px;font-weight:600">avulso</span>'}</td>
+      <td class="t-right"><div class="row-actions" style="justify-content:flex-end;opacity:1">
+        <button class="icon-btn" data-edit-tx="${t.id}" title="Editar"><svg viewBox="0 0 24 24" width="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button>
+        <button class="icon-btn danger" data-del-tx="${t.id}" title="Excluir"><svg viewBox="0 0 24 24" width="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg></button>
+      </div></td>
+    </tr>`;
+  };
+
+  return `
+  ${estranhas?`<div class="card card-pad" style="border-color:var(--expense);background:var(--expense-soft);margin-bottom:16px">
+    <div style="font-size:13px;font-weight:700;color:var(--expense)">⚠️ ${estranhas} lançamento(s) com data fora do esperado</div>
+    <div style="font-size:12.5px;font-weight:600;color:var(--ink-soft);margin-top:4px">Normalmente é erro de digitação no ano. Eles aparecem destacados na lista — use o botão <b>Só datas suspeitas</b> para vê-los.</div>
+    <button class="btn btn-ghost" id="histSuspeitas" style="margin-top:10px">Só datas suspeitas</button>
+  </div>`:""}
+  <div class="card card-pad">
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding-bottom:14px;border-bottom:1px solid var(--border-soft)">
+      <select id="histTipo" class="mini-sel" aria-label="Tipo">
+        ${[["todos","Todos os tipos"],["receita","Receitas"],["despesa","Despesas"],["transferencia","Transferências"]].map(([v,n])=>`<option value="${v}" ${state.histTipo===v?"selected":""}>${n}</option>`).join("")}
+      </select>
+      <select id="histConta" class="mini-sel" aria-label="Conta">
+        <option value="todas">Todas as contas</option>
+        ${DB.contas.map(c=>`<option value="${c.id}" ${state.histConta===c.id?"selected":""}>${escapeHtml(c.nome)}</option>`).join("")}
+      </select>
+      <select id="histOrigem" class="mini-sel" aria-label="Origem">
+        ${[["todos","Avulsos e fixos"],["avulso","Só avulsos"],["fixa","Só de séries fixas"]].map(([v,n])=>`<option value="${v}" ${state.histOrigem===v?"selected":""}>${n}</option>`).join("")}
+      </select>
+      <select id="histStatus" class="mini-sel" aria-label="Status">
+        ${[["todos","Todos os status"],["efetivado","Pago"],["pendente","Pendente"]].map(([v,n])=>`<option value="${v}" ${state.histStatus===v?"selected":""}>${n}</option>`).join("")}
+      </select>
+      <div class="search-box" style="flex:1;min-width:200px"><svg viewBox="0 0 24 24" width="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><input id="histBusca" placeholder="Buscar por descrição, categoria, conta ou data..." value="${escapeHtml(state.histBusca||"")}"></div>
+      ${filtrado?`<button class="link-btn" id="histLimpar">Limpar filtros</button>`:""}
+    </div>
+    ${tx.length?`
+    <div style="overflow-x:auto;margin-top:4px"><table class="tx-table">
+      <thead><tr><th>📅 Data</th><th>📝 Descrição</th><th>🏷️ Categoria</th><th>🏦 Conta</th><th class="t-right">💰 Valor</th><th>✅ Status</th><th>🔁 Origem</th><th></th></tr></thead>
+      <tbody>${mostrando.map(linha).join("")}</tbody>
+    </table></div>
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:14px;font-size:12.5px;font-weight:600;color:var(--ink-soft)">
+      <span>Mostrando ${mostrando.length} de ${tx.length}${filtrado?` (${total} no total)`:" lançamentos"}</span>
+      <div style="flex:1"></div>
+      ${tx.length>mostrando.length?`<button class="btn btn-ghost" id="histMais">Mostrar mais 100</button>`:""}
+    </div>`
+    : emptyBig("Nenhum lançamento encontrado", filtrado?"Ajuste os filtros ou use “Limpar filtros”.":"Seus lançamentos aparecerão aqui assim que você cadastrar o primeiro.")}
+  </div>`;
+}
+
 /* ---------------- DÍVIDAS (estilo PlannerFin) ---------------- */
 function viewDividas(){
   const ds=DB.dividas||[];
@@ -2823,6 +2909,24 @@ function bindNovasTelas(){
   document.getElementById("selTxCat")?.addEventListener("change",e=>{ state.txCat=e.target.value; render(); });
   document.getElementById("selTxConta")?.addEventListener("change",e=>{ state.txConta=e.target.value; render(); });
   document.getElementById("selTxStatus")?.addEventListener("change",e=>{ state.txStatus=e.target.value; render(); });
+  /* histórico */
+  ["histTipo","histConta","histStatus","histOrigem"].forEach(id=>{
+    document.getElementById(id)?.addEventListener("change",e=>{
+      state[id]=e.target.value; state.histLimite=100; render();
+    });
+  });
+  const hb=document.getElementById("histBusca");
+  if(hb){ hb.addEventListener("input",()=>{ state.histBusca=hb.value; state.histLimite=100;
+    clearTimeout(hb._t); hb._t=setTimeout(()=>{ const pos=hb.selectionStart; render();
+      const nb=document.getElementById("histBusca"); if(nb){ nb.focus(); nb.setSelectionRange(pos,pos); } },350); }); }
+  document.getElementById("histMais")?.addEventListener("click",()=>{ state.histLimite=(state.histLimite||100)+100; render(); });
+  document.getElementById("histLimpar")?.addEventListener("click",()=>{
+    Object.assign(state,{histBusca:"",histTipo:"todos",histConta:"todas",histStatus:"todos",histOrigem:"todos",histLimite:100}); render(); });
+  document.getElementById("histSuspeitas")?.addEventListener("click",()=>{
+    const t=DB.transacoes.find(x=>dataEstranha(x.data));
+    state.histBusca = t ? dataBR(t.data) : ""; state.histOrigem="todos"; state.histLimite=100; render();
+  });
+
   document.getElementById("btnTxLimpar")?.addEventListener("click",()=>{ Object.assign(state,{filtroTx:"todos",txStatus:"todos",txCat:"todas",txConta:"todas",txFixas:false,txBusca:""}); render(); });
   document.getElementById("txFixasToggle")?.addEventListener("click",()=>{ state.txFixas=!state.txFixas; render(); });
   const bsc=document.getElementById("txBusca");
@@ -3967,17 +4071,30 @@ function modalBackup(){
       <input type="file" id="bkRestore" accept=".json" style="display:none"></label>
     ${(()=>{ const bks=lerBackups(); return bks.length?`<div style="border-top:1px solid var(--border-soft);padding-top:14px;margin-bottom:16px">
       <div style="font-size:12.5px;font-weight:800;margin-bottom:4px">Cópias automáticas deste aparelho</div>
-      <div style="font-size:11.5px;color:var(--ink-soft);font-weight:600;margin-bottom:10px">Guardadas uma vez por dia e sempre que a sincronização remove lançamentos.</div>
+      <div style="font-size:11.5px;color:var(--ink-soft);font-weight:600;margin-bottom:10px">Uma por dia (guardando os últimos ${MAX_COPIAS} dias) e sempre que a sincronização remove lançamentos. Ficam no navegador deste aparelho.</div>
       ${bks.map((b,i)=>`<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border-soft)">
         <div><div style="font-size:12.5px;font-weight:700">${new Date(b.ts).toLocaleString("pt-BR")}</div>
         <div style="font-size:11px;color:var(--ink-faint);font-weight:600">${escapeHtml(b.motivo)} · ${b.n} transações</div></div>
         <button class="btn btn-ghost" data-bk-auto="${i}" style="padding:6px 10px">Restaurar</button></div>`).join("")}
     </div>`:""; })()}
+    <div style="border-top:1px solid var(--border-soft);padding-top:14px;margin-bottom:16px">
+      <label class="switch-row" style="justify-content:space-between;width:100%">
+        <span style="font-size:12.5px;font-weight:700">Baixar o arquivo do backup uma vez por dia
+          <span style="display:block;font-size:11px;color:var(--ink-soft);font-weight:600;margin-top:2px">Só no computador. A cópia dentro do app some se você limpar o navegador; o arquivo não.</span></span>
+        <span class="switch ${autoDownloadLigado()?"on":""}" id="bkAutoDl"><i></i></span>
+      </label>
+    </div>
     <div style="border-top:1px solid var(--border-soft);padding-top:14px">
       <button class="btn btn-ghost" id="bkReset" style="width:100%;justify-content:center;color:var(--expense);border-color:var(--expense-soft)">🗑️ Apagar todos os dados</button>
     </div>
   </div>`);
   document.getElementById("bkJson").onclick=()=>{ baixarJSON(); };
+  document.getElementById("bkAutoDl").onclick=function(){
+    const novo=!autoDownloadLigado();
+    try{ localStorage.setItem("mf_auto_download", novo?"1":"0"); }catch(e){}
+    this.classList.toggle("on",novo);
+    toast(novo?"O backup do dia será baixado automaticamente.":"Download automático desligado.");
+  };
   document.querySelectorAll("[data-bk-auto]").forEach(btn=>btn.onclick=()=>{
     const b=lerBackups()[Number(btn.dataset.bkAuto)]; if(!b) return;
     if(!confirm(`Restaurar a cópia de ${new Date(b.ts).toLocaleString("pt-BR")}? Os dados atuais serão substituídos em todos os aparelhos.`)) return;
@@ -4371,19 +4488,53 @@ function localSujo(){ const b=lerBase(); return !b || !mesmoConteudo(DB,b); }
 
 /* cópias automáticas de segurança (até 3, neste aparelho) */
 function lerBackups(){ try{ return JSON.parse(localStorage.getItem("mf_backups")||"[]"); }catch(e){ return []; } }
+const MAX_COPIAS=7;   // uma por dia, guardando a última semana
 function guardarBackup(motivo, obj){
-  try{
-    const json=JSON.stringify(obj);
-    if(json.length>700000) return;              // grande demais para guardar cópias no navegador
-    const arr=lerBackups();
-    arr.unshift({ts:Date.now(), motivo, n:(obj.transacoes||[]).length, json});
-    localStorage.setItem("mf_backups", JSON.stringify(arr.slice(0,3)));
-  }catch(e){ try{ localStorage.removeItem("mf_backups"); }catch(_){} }
+  let json;
+  try{ json=JSON.stringify(obj); }catch(e){ return; }
+  const nova={ts:Date.now(), motivo, n:(obj.transacoes||[]).length, json};
+  let arr=lerBackups(); arr.unshift(nova); arr=arr.slice(0,MAX_COPIAS);
+  // Se faltar espaço, vai descartando a cópia mais antiga em vez de apagar
+  // todas — antes um único erro de espaço zerava o histórico de cópias.
+  while(arr.length){
+    try{ localStorage.setItem("mf_backups", JSON.stringify(arr)); return; }
+    catch(e){ arr.pop(); }
+  }
+  try{ localStorage.removeItem("mf_backups"); }catch(e){}
 }
+/* Cópia diária automática. Roda na abertura do app: como ele não fica rodando
+   sozinho, "fim do dia" na prática é a primeira vez que você abre num dia novo,
+   e o que fica guardado é exatamente como o dia anterior terminou. */
 function backupDiario(){
   if(!(DB.transacoes||[]).length) return;
-  const b=lerBackups()[0];
-  if(!b || new Date(b.ts).toDateString()!==new Date().toDateString()) guardarBackup("cópia diária", DB);
+  const hojeStr=new Date().toDateString();
+  const jaHoje=lerBackups().some(b=>b.motivo==="cópia diária" && new Date(b.ts).toDateString()===hojeStr);
+  if(jaHoje) return;
+  guardarBackup("cópia diária", DB);
+  baixarBackupDoDia();
+}
+/* Baixa o .json uma vez por dia. A cópia acima fica no navegador e some junto
+   com ele; o arquivo é o que sobrevive a limpar dados ou trocar de máquina.
+   Pode ser desligado em Perfil → Backup / Restaurar. */
+function autoDownloadLigado(){
+  try{ return localStorage.getItem("mf_auto_download")!=="0"; }catch(e){ return false; }
+}
+function baixarBackupDoDia(){
+  if(!autoDownloadLigado()) return;
+  // no celular um download automático atrapalha mais do que ajuda;
+  // a cópia guardada dentro do app continua valendo em qualquer aparelho
+  const ehCelular = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent||"")
+                 || window.matchMedia("(max-width:860px)").matches;
+  if(ehCelular) return;
+  let ultimo=null;
+  try{ ultimo=localStorage.getItem("mf_ultimo_download"); }catch(e){ return; }
+  const hojeIso=hoje();
+  if(ultimo===hojeIso) return;
+  try{
+    baixarJSON();
+    localStorage.setItem("mf_ultimo_download", hojeIso);
+    setTimeout(()=>toast("Backup do dia baixado. Para desligar, veja Perfil → Backup / Restaurar."),1200);
+  }catch(e){ /* navegador bloqueou o download: a cópia no app continua valendo */ }
 }
 function backupSeEncolher(antes, depois){
   if((depois.transacoes||[]).length < (antes.transacoes||[]).length) guardarBackup("antes de sincronizar", antes);
@@ -4603,6 +4754,7 @@ function nuvemIniciar(){
 ==================================================================== */
 carregar();
 render();
+backupDiario();   // cópia automática do dia, antes de qualquer sincronização
 if(nuvemConfigurada()){
   nuvemIniciar();
 }else{
